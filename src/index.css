@@ -1,0 +1,62 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=Source+Code+Pro:wght@400;600;700&display=swap');
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  font-family: 'Source Code Pro', 'Courier New', monospace;
+  background-color: #111827;
+  color: #65a30d;
+  line-height: 1.5;
+}
+
+/* Terminal cursor animation */
+@keyframes blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+
+.cursor::after {
+  content: '█';
+  animation: blink 1s infinite;
+  color: #65a30d;
+}
+
+/* Minecraft-style button animations */
+.minecraft-button {
+  image-rendering: pixelated;
+  transition: all 0.1s ease;
+}
+
+.minecraft-button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 8px rgba(101, 163, 13, 0.3);
+}
+
+.minecraft-button:active {
+  transform: translateY(1px);
+  box-shadow: 0 1px 2px rgba(101, 163, 13, 0.3);
+}
+
+/* Terminal text effects */
+.terminal-glow {
+  text-shadow: 0 0 5px #65a30d, 0 0 10px #65a30d, 0 0 15px #65a30d;
+}
+
+/* Pixel-perfect borders */
+.pixel-border {
+  border-style: solid;
+  border-image: repeating-linear-gradient(90deg, transparent, transparent 2px, #65a30d 2px, #65a30d 4px) 2;
+}
+
+/* Block-style shadows */
+.block-shadow {
+  box-shadow: 
+    4px 4px 0px rgba(101, 163, 13, 0.3),
+    8px 8px 0px rgba(101, 163, 13, 0.1);
+}
