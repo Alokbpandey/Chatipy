@@ -1,7 +1,6 @@
 import express from 'express';
 import { supabase } from '../config/database.js';
 import RAGService from '../services/RAGService.js';
-import { validateChatMessage } from '../utils/validation.js';
 
 const router = express.Router();
 const ragService = new RAGService();
@@ -12,18 +11,9 @@ router.post('/:chatbotId/chat', async (req, res) => {
     const { chatbotId } = req.params;
     const { message, sessionId } = req.body;
 
-    // Validate chatbot ID
-    if (!chatbotId) {
+    if (!message) {
       return res.status(400).json({
-        error: 'Chatbot ID is required'
-      });
-    }
-
-    // Validate message
-    const messageValidation = validateChatMessage(message);
-    if (!messageValidation.valid) {
-      return res.status(400).json({
-        error: messageValidation.error
+        error: 'Message is required'
       });
     }
 
@@ -49,7 +39,7 @@ router.post('/:chatbotId/chat', async (req, res) => {
     }
 
     // Generate response using RAG
-    const result = await ragService.generateContextualResponse(chatbotId, messageValidation.message);
+    const result = await ragService.generateContextualResponse(chatbotId, message);
 
     res.json({
       success: true,
@@ -75,12 +65,6 @@ router.post('/:chatbotId/chat', async (req, res) => {
 router.get('/:chatbotId', async (req, res) => {
   try {
     const { chatbotId } = req.params;
-
-    if (!chatbotId) {
-      return res.status(400).json({
-        error: 'Chatbot ID is required'
-      });
-    }
 
     const { data: chatbot, error } = await supabase
       .from('chatbots')
@@ -111,26 +95,11 @@ router.put('/:chatbotId', async (req, res) => {
     const { chatbotId } = req.params;
     const updates = req.body;
 
-    if (!chatbotId) {
-      return res.status(400).json({
-        error: 'Chatbot ID is required'
-      });
-    }
-
     // Remove fields that shouldn't be updated directly
     delete updates.id;
     delete updates.created_at;
     delete updates.status;
     delete updates.progress;
-    delete updates.completed_at;
-
-    // Sanitize inputs
-    if (updates.website_name) {
-      updates.website_name = sanitizeInput(updates.website_name);
-    }
-    if (updates.description) {
-      updates.description = sanitizeInput(updates.description);
-    }
 
     updates.updated_at = new Date().toISOString();
 
@@ -163,20 +132,12 @@ router.get('/:chatbotId/qa', async (req, res) => {
     const { chatbotId } = req.params;
     const { category, limit = 50 } = req.query;
 
-    if (!chatbotId) {
-      return res.status(400).json({
-        error: 'Chatbot ID is required'
-      });
-    }
-
-    const limitNum = Math.min(parseInt(limit) || 50, 100);
-
     let query = supabase
       .from('chatbot_qa')
       .select('*')
       .eq('chatbot_id', chatbotId)
       .order('confidence', { ascending: false })
-      .limit(limitNum);
+      .limit(parseInt(limit));
 
     if (category) {
       query = query.eq('category', category);
@@ -205,20 +166,12 @@ router.get('/:chatbotId/pages', async (req, res) => {
     const { chatbotId } = req.params;
     const { limit = 50 } = req.query;
 
-    if (!chatbotId) {
-      return res.status(400).json({
-        error: 'Chatbot ID is required'
-      });
-    }
-
-    const limitNum = Math.min(parseInt(limit) || 50, 100);
-
     const { data, error } = await supabase
       .from('chatbot_pages')
       .select('url, title, description, word_count, scraped_at')
       .eq('chatbot_id', chatbotId)
       .order('scraped_at', { ascending: false })
-      .limit(limitNum);
+      .limit(parseInt(limit));
 
     if (error) throw error;
 

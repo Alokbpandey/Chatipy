@@ -5,7 +5,7 @@ class RAGService {
   constructor() {
     this.aiService = new AIService();
     this.similarityThreshold = 0.7;
-    this.maxContextLength = 3000;
+    this.maxContextLength = 4000;
   }
 
   async storeKnowledgeBase(chatbotId, scrapedData, qaData) {
@@ -14,62 +14,52 @@ class RAGService {
     try {
       // Store scraped pages with embeddings
       for (const page of scrapedData.pages) {
-        try {
-          const pageEmbedding = await this.aiService.generateEmbeddings(
-            `${page.title} ${page.description} ${page.textContent.substring(0, 2000)}`
-          );
+        const pageEmbedding = await this.aiService.generateEmbeddings(
+          `${page.title} ${page.description} ${page.textContent.substring(0, 2000)}`
+        );
 
-          const { error: pageError } = await supabase
-            .from('chatbot_pages')
-            .insert({
-              chatbot_id: chatbotId,
-              url: page.url,
-              title: page.title,
-              description: page.description,
-              content: page.textContent,
-              headings: page.headings || [],
-              nav_links: page.navLinks || [],
-              word_count: page.wordCount,
-              embedding: pageEmbedding,
-              scraped_at: page.scrapedAt
-            });
+        const { error: pageError } = await supabase
+          .from('chatbot_pages')
+          .insert({
+            chatbot_id: chatbotId,
+            url: page.url,
+            title: page.title,
+            description: page.description,
+            content: page.textContent,
+            headings: page.headings,
+            nav_links: page.navLinks,
+            word_count: page.wordCount,
+            embedding: pageEmbedding,
+            scraped_at: page.scrapedAt
+          });
 
-          if (pageError) {
-            console.error('Error storing page:', pageError);
-          }
-        } catch (embeddingError) {
-          console.error(`Error processing page ${page.url}:`, embeddingError.message);
-          continue;
+        if (pageError) {
+          console.error('Error storing page:', pageError);
         }
       }
 
       // Store Q&A pairs with embeddings
       for (const qa of qaData) {
-        try {
-          const qaEmbedding = await this.aiService.generateEmbeddings(
-            `${qa.question} ${qa.answer}`
-          );
+        const qaEmbedding = await this.aiService.generateEmbeddings(
+          `${qa.question} ${qa.answer}`
+        );
 
-          const { error: qaError } = await supabase
-            .from('chatbot_qa')
-            .insert({
-              chatbot_id: chatbotId,
-              question: qa.question,
-              answer: qa.answer,
-              category: qa.category,
-              keywords: qa.keywords || [],
-              confidence: qa.confidence,
-              source_pages: qa.sourcePages || [],
-              embedding: qaEmbedding,
-              generated_at: qa.generatedAt
-            });
+        const { error: qaError } = await supabase
+          .from('chatbot_qa')
+          .insert({
+            chatbot_id: chatbotId,
+            question: qa.question,
+            answer: qa.answer,
+            category: qa.category,
+            keywords: qa.keywords,
+            confidence: qa.confidence,
+            source_pages: qa.sourcePages,
+            embedding: qaEmbedding,
+            generated_at: qa.generatedAt
+          });
 
-          if (qaError) {
-            console.error('Error storing Q&A:', qaError);
-          }
-        } catch (embeddingError) {
-          console.error(`Error processing Q&A:`, embeddingError.message);
-          continue;
+        if (qaError) {
+          console.error('Error storing Q&A:', qaError);
         }
       }
 
@@ -87,74 +77,44 @@ class RAGService {
       // Generate embedding for the query
       const queryEmbedding = await this.aiService.generateEmbeddings(query);
 
-      // Search for similar Q&A pairs using cosine similarity
-      const { data: qaResults, error: qaError } = await supabase
-        .from('chatbot_qa')
-        .select('*')
-        .eq('chatbot_id', chatbotId)
-        .limit(limit);
+      // Search for similar Q&A pairs
+      const { data: qaResults, error: qaError } = await supabase.rpc(
+        'search_similar_qa',
+        {
+          chatbot_id: chatbotId,
+          query_embedding: queryEmbedding,
+          similarity_threshold: this.similarityThreshold,
+          match_limit: limit
+        }
+      );
 
       if (qaError) {
         console.error('Error searching Q&A:', qaError);
       }
 
       // Search for similar pages
-      const { data: pageResults, error: pageError } = await supabase
-        .from('chatbot_pages')
-        .select('*')
-        .eq('chatbot_id', chatbotId)
-        .limit(limit);
+      const { data: pageResults, error: pageError } = await supabase.rpc(
+        'search_similar_pages',
+        {
+          chatbot_id: chatbotId,
+          query_embedding: queryEmbedding,
+          similarity_threshold: this.similarityThreshold,
+          match_limit: limit
+        }
+      );
 
       if (pageError) {
         console.error('Error searching pages:', pageError);
       }
 
-      // Calculate similarities manually (fallback for vector search)
-      const qaWithSimilarity = (qaResults || []).map(qa => ({
-        ...qa,
-        similarity: this.calculateSimilarity(queryEmbedding, qa.embedding)
-      })).filter(qa => qa.similarity > this.similarityThreshold)
-        .sort((a, b) => b.similarity - a.similarity);
-
-      const pagesWithSimilarity = (pageResults || []).map(page => ({
-        ...page,
-        similarity: this.calculateSimilarity(queryEmbedding, page.embedding)
-      })).filter(page => page.similarity > this.similarityThreshold)
-        .sort((a, b) => b.similarity - a.similarity);
-
       return {
-        qaResults: qaWithSimilarity.slice(0, limit),
-        pageResults: pagesWithSimilarity.slice(0, limit)
+        qaResults: qaResults || [],
+        pageResults: pageResults || []
       };
 
     } catch (error) {
       console.error('Error in similarity search:', error.message);
       return { qaResults: [], pageResults: [] };
-    }
-  }
-
-  calculateSimilarity(embedding1, embedding2) {
-    if (!embedding1 || !embedding2 || !Array.isArray(embedding1) || !Array.isArray(embedding2)) {
-      return 0;
-    }
-
-    try {
-      // Cosine similarity calculation
-      let dotProduct = 0;
-      let norm1 = 0;
-      let norm2 = 0;
-
-      for (let i = 0; i < Math.min(embedding1.length, embedding2.length); i++) {
-        dotProduct += embedding1[i] * embedding2[i];
-        norm1 += embedding1[i] * embedding1[i];
-        norm2 += embedding2[i] * embedding2[i];
-      }
-
-      const magnitude = Math.sqrt(norm1) * Math.sqrt(norm2);
-      return magnitude > 0 ? dotProduct / magnitude : 0;
-    } catch (error) {
-      console.error('Error calculating similarity:', error.message);
-      return 0;
     }
   }
 
@@ -172,14 +132,14 @@ class RAGService {
       }
 
       // Search for relevant content
-      const searchResults = await this.searchSimilarContent(chatbotId, userQuery, 3);
+      const searchResults = await this.searchSimilarContent(chatbotId, userQuery);
       
       // Build context from search results
       let context = '';
       
       // Add relevant Q&A pairs
       if (searchResults.qaResults.length > 0) {
-        context += 'Relevant Information:\n';
+        context += 'Relevant Q&A:\n';
         searchResults.qaResults.forEach(qa => {
           context += `Q: ${qa.question}\nA: ${qa.answer}\n\n`;
         });
@@ -187,26 +147,10 @@ class RAGService {
 
       // Add relevant page content
       if (searchResults.pageResults.length > 0) {
-        context += 'Website Content:\n';
+        context += 'Relevant Pages:\n';
         searchResults.pageResults.forEach(page => {
-          context += `Page: ${page.title}\nContent: ${page.content.substring(0, 400)}...\n\n`;
+          context += `Page: ${page.title}\nContent: ${page.content.substring(0, 500)}...\n\n`;
         });
-      }
-
-      // Fallback context if no similar content found
-      if (!context.trim()) {
-        const { data: fallbackQA } = await supabase
-          .from('chatbot_qa')
-          .select('question, answer')
-          .eq('chatbot_id', chatbotId)
-          .limit(3);
-
-        if (fallbackQA && fallbackQA.length > 0) {
-          context = 'General Information:\n';
-          fallbackQA.forEach(qa => {
-            context += `Q: ${qa.question}\nA: ${qa.answer}\n\n`;
-          });
-        }
       }
 
       // Limit context length
@@ -244,7 +188,7 @@ class RAGService {
     const { qaResults, pageResults } = searchResults;
     
     if (qaResults.length === 0 && pageResults.length === 0) {
-      return 0.3;
+      return 0.1;
     }
 
     const avgQAConfidence = qaResults.length > 0 
@@ -255,14 +199,14 @@ class RAGService {
       ? pageResults.reduce((sum, page) => sum + (page.similarity || 0), 0) / pageResults.length
       : 0;
 
-    return Math.max(avgQAConfidence, avgPageConfidence, 0.3);
+    return Math.max(avgQAConfidence, avgPageConfidence);
   }
 
   extractSources(searchResults) {
     const sources = new Set();
     
     searchResults.qaResults.forEach(qa => {
-      if (qa.source_pages && Array.isArray(qa.source_pages)) {
+      if (qa.source_pages) {
         qa.source_pages.forEach(url => sources.add(url));
       }
     });
@@ -305,11 +249,11 @@ class RAGService {
       const analytics = {
         totalInteractions: data.length,
         averageConfidence: data.length > 0 
-          ? data.reduce((sum, interaction) => sum + (interaction.confidence || 0), 0) / data.length
+          ? data.reduce((sum, interaction) => sum + interaction.confidence, 0) / data.length
           : 0,
         topQueries: this.getTopQueries(data),
         dailyStats: this.getDailyStats(data),
-        lowConfidenceQueries: data.filter(interaction => (interaction.confidence || 0) < 0.5)
+        lowConfidenceQueries: data.filter(interaction => interaction.confidence < 0.5)
       };
 
       return analytics;
@@ -347,13 +291,13 @@ class RAGService {
         dailyStats[date] = { count: 0, totalConfidence: 0 };
       }
       dailyStats[date].count++;
-      dailyStats[date].totalConfidence += (interaction.confidence || 0);
+      dailyStats[date].totalConfidence += interaction.confidence;
     });
 
     return Object.entries(dailyStats).map(([date, stats]) => ({
       date,
       interactions: stats.count,
-      averageConfidence: stats.count > 0 ? stats.totalConfidence / stats.count : 0
+      averageConfidence: stats.totalConfidence / stats.count
     }));
   }
 }

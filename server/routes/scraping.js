@@ -4,7 +4,6 @@ import { supabase } from '../config/database.js';
 import WebScrapingService from '../services/WebScrapingService.js';
 import AIService from '../services/AIService.js';
 import RAGService from '../services/RAGService.js';
-import { validateUrl, validateBotType, sanitizeInput } from '../utils/validation.js';
 
 const router = express.Router();
 const scrapingService = new WebScrapingService();
@@ -30,42 +29,26 @@ router.post('/generate-chatbot', async (req, res) => {
     }
 
     // Validate URL
-    const urlValidation = validateUrl(websiteUrl);
-    if (!urlValidation.valid) {
+    try {
+      new URL(websiteUrl);
+    } catch {
       return res.status(400).json({
-        error: urlValidation.error
-      });
-    }
-
-    // Validate bot type
-    if (!validateBotType(botType)) {
-      return res.status(400).json({
-        error: 'Invalid bot type. Must be one of: navigation, qa, whatsapp, support, general'
-      });
-    }
-
-    // Validate maxPages
-    if (maxPages < 1 || maxPages > 100) {
-      return res.status(400).json({
-        error: 'maxPages must be between 1 and 100'
+        error: 'Invalid URL format'
       });
     }
 
     const chatbotId = uuidv4();
-    const websiteName = sanitizeInput(botName) || new URL(websiteUrl).hostname;
-    const botDescription = sanitizeInput(description) || `AI chatbot for ${new URL(websiteUrl).hostname}`;
     
     // Create chatbot record
     const { error: chatbotError } = await supabase
       .from('chatbots')
       .insert({
         id: chatbotId,
-        website_url: urlValidation.url,
-        website_name: websiteName,
+        website_url: websiteUrl,
+        website_name: botName || new URL(websiteUrl).hostname,
         bot_type: botType,
-        description: botDescription,
+        description: description || `AI chatbot for ${new URL(websiteUrl).hostname}`,
         status: 'processing',
-        progress: 0,
         created_at: new Date().toISOString()
       });
 
@@ -74,12 +57,10 @@ router.post('/generate-chatbot', async (req, res) => {
     }
 
     // Start async processing
-    processWebsiteAsync(chatbotId, urlValidation.url, {
+    processWebsiteAsync(chatbotId, websiteUrl, {
       botType,
       maxPages,
       includeSubdomains
-    }).catch(error => {
-      console.error(`Background processing failed for ${chatbotId}:`, error.message);
     });
 
     res.json({
@@ -103,12 +84,6 @@ router.get('/status/:chatbotId', async (req, res) => {
   try {
     const { chatbotId } = req.params;
 
-    if (!chatbotId) {
-      return res.status(400).json({
-        error: 'Chatbot ID is required'
-      });
-    }
-
     const { data: chatbot, error } = await supabase
       .from('chatbots')
       .select('*')
@@ -122,21 +97,21 @@ router.get('/status/:chatbotId', async (req, res) => {
     }
 
     // Get additional stats
-    const { count: qaCount } = await supabase
+    const { data: qaCount } = await supabase
       .from('chatbot_qa')
-      .select('*', { count: 'exact', head: true })
+      .select('id')
       .eq('chatbot_id', chatbotId);
 
-    const { count: pageCount } = await supabase
+    const { data: pageCount } = await supabase
       .from('chatbot_pages')
-      .select('*', { count: 'exact', head: true })
+      .select('id')
       .eq('chatbot_id', chatbotId);
 
     res.json({
       ...chatbot,
       stats: {
-        totalQAs: qaCount || 0,
-        totalPages: pageCount || 0
+        totalQAs: qaCount?.length || 0,
+        totalPages: pageCount?.length || 0
       }
     });
 
@@ -176,12 +151,6 @@ router.get('/chatbots', async (req, res) => {
 router.delete('/chatbot/:chatbotId', async (req, res) => {
   try {
     const { chatbotId } = req.params;
-
-    if (!chatbotId) {
-      return res.status(400).json({
-        error: 'Chatbot ID is required'
-      });
-    }
 
     // Delete in correct order due to foreign key constraints
     await supabase.from('chatbot_interactions').delete().eq('chatbot_id', chatbotId);
@@ -230,16 +199,12 @@ async function processWebsiteAsync(chatbotId, websiteUrl, options) {
       includeSubdomains: options.includeSubdomains
     });
 
-    if (!scrapedData.pages || scrapedData.pages.length === 0) {
-      throw new Error('No content could be extracted from the website');
-    }
-
     // Update status to generating Q&A
     await supabase
       .from('chatbots')
       .update({ 
         status: 'generating_qa',
-        progress: 40,
+        progress: 50,
         pages_scraped: scrapedData.pages.length,
         updated_at: new Date().toISOString()
       })
@@ -248,16 +213,12 @@ async function processWebsiteAsync(chatbotId, websiteUrl, options) {
     // Generate Q&A pairs
     const qaData = await aiService.generateQuestionsAndAnswers(scrapedData, options.botType);
 
-    if (!qaData || qaData.length === 0) {
-      throw new Error('Failed to generate Q&A pairs');
-    }
-
     // Update status to storing data
     await supabase
       .from('chatbots')
       .update({ 
         status: 'storing_data',
-        progress: 70,
+        progress: 80,
         qa_pairs_generated: qaData.length,
         updated_at: new Date().toISOString()
       })
@@ -265,16 +226,6 @@ async function processWebsiteAsync(chatbotId, websiteUrl, options) {
 
     // Store knowledge base
     await ragService.storeKnowledgeBase(chatbotId, scrapedData, qaData);
-
-    // Update status to generating summary
-    await supabase
-      .from('chatbots')
-      .update({ 
-        status: 'generating_summary',
-        progress: 90,
-        updated_at: new Date().toISOString()
-      })
-      .eq('id', chatbotId);
 
     // Generate website summary
     const summary = await aiService.summarizeWebsite(scrapedData);

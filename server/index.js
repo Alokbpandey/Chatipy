@@ -3,8 +3,6 @@ import cors from 'cors';
 import helmet from 'helmet';
 import dotenv from 'dotenv';
 import { RateLimiterMemory } from 'rate-limiter-flexible';
-import path from 'path';
-import { fileURLToPath } from 'url';
 
 // Import route handlers
 import scrapingRoutes from './routes/scraping.js';
@@ -16,13 +14,7 @@ import analyticsRoutes from './routes/analytics.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { requestLogger } from './middleware/requestLogger.js';
 
-// Import config tests
-import { testConnection } from './config/database.js';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-dotenv.config({ path: path.join(__dirname, '../.env') });
+dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -47,49 +39,26 @@ const rateLimitMiddleware = async (req, res, next) => {
 };
 
 // Middleware
-app.use(helmet({
-  contentSecurityPolicy: false, // Disable for development
-  crossOriginEmbedderPolicy: false
-}));
-
+app.use(helmet());
 app.use(cors({
   origin: process.env.NODE_ENV === 'production' 
     ? ['https://your-frontend-domain.com'] 
-    : ['http://localhost:5173', 'http://localhost:3000', 'http://localhost:4173'],
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+    : ['http://localhost:5173', 'http://localhost:3000'],
+  credentials: true
 }));
-
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(requestLogger);
-
-// Apply rate limiting only to API routes
-app.use('/api', rateLimitMiddleware);
+app.use(rateLimitMiddleware);
 
 // Health check endpoint
-app.get('/health', async (req, res) => {
-  try {
-    const dbStatus = await testConnection();
-    
-    res.json({
-      status: 'OK',
-      timestamp: new Date().toISOString(),
-      version: '1.0.0',
-      environment: process.env.NODE_ENV,
-      services: {
-        database: dbStatus ? 'connected' : 'disconnected',
-        openai: process.env.OPENAI_API_KEY ? 'configured' : 'not configured'
-      }
-    });
-  } catch (error) {
-    res.status(500).json({
-      status: 'ERROR',
-      timestamp: new Date().toISOString(),
-      error: error.message
-    });
-  }
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'OK',
+    timestamp: new Date().toISOString(),
+    version: '1.0.0',
+    environment: process.env.NODE_ENV
+  });
 });
 
 // API Routes
@@ -105,27 +74,14 @@ app.use(errorHandler);
 app.use('*', (req, res) => {
   res.status(404).json({
     error: 'Endpoint not found',
-    message: 'The requested API endpoint does not exist',
-    timestamp: new Date().toISOString()
+    message: 'The requested API endpoint does not exist'
   });
-});
-
-// Graceful shutdown
-process.on('SIGTERM', () => {
-  console.log('SIGTERM received, shutting down gracefully');
-  process.exit(0);
-});
-
-process.on('SIGINT', () => {
-  console.log('SIGINT received, shutting down gracefully');
-  process.exit(0);
 });
 
 app.listen(PORT, () => {
   console.log(`🚀 Chatify Backend Server running on port ${PORT}`);
   console.log(`📊 Environment: ${process.env.NODE_ENV}`);
   console.log(`🔗 Health check: http://localhost:${PORT}/health`);
-  console.log(`📚 API Base URL: http://localhost:${PORT}/api`);
 });
 
 export default app;

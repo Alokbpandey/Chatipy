@@ -1,13 +1,8 @@
 import { testConnection } from '../config/database.js';
 import { testOpenAIConnection } from '../config/openai.js';
 import dotenv from 'dotenv';
-import path from 'path';
-import { fileURLToPath } from 'url';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-dotenv.config({ path: path.join(__dirname, '../../.env') });
+dotenv.config();
 
 async function setupBackend() {
   console.log('🚀 Setting up Chatify Backend...\n');
@@ -28,9 +23,6 @@ async function setupBackend() {
       console.error(`   - ${varName}`);
     });
     console.log('\n📝 Please copy .env.example to .env and fill in the required values.');
-    console.log('\n🔗 Get your keys from:');
-    console.log('   - OpenAI: https://platform.openai.com/api-keys');
-    console.log('   - Supabase: https://supabase.com/dashboard');
     process.exit(1);
   }
 
@@ -41,11 +33,6 @@ async function setupBackend() {
   const dbConnected = await testConnection();
   if (!dbConnected) {
     console.error('❌ Database connection failed. Please check your Supabase configuration.');
-    console.log('\n🔧 Troubleshooting:');
-    console.log('   1. Verify SUPABASE_URL is correct');
-    console.log('   2. Verify SUPABASE_SERVICE_ROLE_KEY is correct');
-    console.log('   3. Ensure your Supabase project is active');
-    console.log('   4. Check if the database schema is properly set up');
     process.exit(1);
   }
 
@@ -54,17 +41,12 @@ async function setupBackend() {
   const aiConnected = await testOpenAIConnection();
   if (!aiConnected) {
     console.error('❌ OpenAI connection failed. Please check your API key.');
-    console.log('\n🔧 Troubleshooting:');
-    console.log('   1. Verify OPENAI_API_KEY is correct');
-    console.log('   2. Ensure your OpenAI account has sufficient credits');
-    console.log('   3. Check if the API key has the required permissions');
     process.exit(1);
   }
 
   console.log('\n🎉 Backend setup completed successfully!');
   console.log('🚀 You can now start the server with: npm run server');
-  console.log('📚 API Documentation available at: http://localhost:3001/health');
-  console.log('🔗 Frontend should connect to: http://localhost:3001/api');
+  console.log('📚 API Documentation: http://localhost:3001/health');
 }
 
 setupBackend().catch(error => {
