@@ -39,5 +39,22 @@ export const sanitizeInput = (input) => {
   return input
     .trim()
     .replace(/[<>]/g, '') // Remove potential HTML tags
-    .substring(0, 1000); // Limit length
+    .replace(/[^\w\s\-_.]/g, '') // Keep only safe characters
+    .substring(0, 200); // Limit length
+};
+
+export const validateChatMessage = (message) => {
+  if (!message || typeof message !== 'string') {
+    return { valid: false, error: 'Message is required and must be a string' };
+  }
+
+  if (message.trim().length === 0) {
+    return { valid: false, error: 'Message cannot be empty' };
+  }
+
+  if (message.length > 1000) {
+    return { valid: false, error: 'Message too long (max 1000 characters)' };
+  }
+
+  return { valid: true, message: message.trim() };
 };

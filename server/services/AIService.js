@@ -4,6 +4,7 @@ class AIService {
   constructor() {
     this.model = 'gpt-3.5-turbo';
     this.embeddingModel = 'text-embedding-ada-002';
+    this.maxTokens = 4000;
   }
 
   async generateQuestionsAndAnswers(scrapedData, botType = 'general') {
@@ -18,15 +19,21 @@ class AIService {
     const allQAs = [];
 
     // Process pages in batches to avoid token limits
-    const batchSize = 3;
+    const batchSize = 2;
     for (let i = 0; i < pages.length; i += batchSize) {
       const batch = pages.slice(i, i + batchSize);
-      const batchQAs = await this.processBatch(batch, botType);
-      allQAs.push(...batchQAs);
       
-      // Add delay between batches to respect rate limits
-      if (i + batchSize < pages.length) {
-        await new Promise(resolve => setTimeout(resolve, 1000));
+      try {
+        const batchQAs = await this.processBatch(batch, botType);
+        allQAs.push(...batchQAs);
+        
+        // Add delay between batches to respect rate limits
+        if (i + batchSize < pages.length) {
+          await new Promise(resolve => setTimeout(resolve, 2000));
+        }
+      } catch (error) {
+        console.error(`Error processing batch ${i}-${i + batchSize}:`, error.message);
+        continue;
       }
     }
 
@@ -36,7 +43,8 @@ class AIService {
 
   async processBatch(pages, botType) {
     const combinedContent = pages.map(page => {
-      return `URL: ${page.url}\nTitle: ${page.title}\nContent: ${page.textContent.substring(0, 2000)}`;
+      const content = page.textContent.substring(0, 1500);
+      return `URL: ${page.url}\nTitle: ${page.title}\nDescription: ${page.description}\nContent: ${content}`;
     }).join('\n\n---\n\n');
 
     const systemPrompt = this.getSystemPrompt(botType);
@@ -45,18 +53,20 @@ class AIService {
 Website Content:
 ${combinedContent}
 
-Generate 8-12 diverse Q&A pairs in JSON format with this structure:
+Generate 6-10 diverse Q&A pairs in JSON format with this exact structure:
 {
   "qa_pairs": [
     {
       "question": "What is...",
-      "answer": "Detailed answer...",
-      "category": "general|navigation|product|support|about",
+      "answer": "Detailed answer based on the content...",
+      "category": "general",
       "keywords": ["keyword1", "keyword2"],
       "confidence": 0.95
     }
   ]
-}`;
+}
+
+Make sure the JSON is valid and answers are based only on the provided content.`;
 
     try {
       const response = await openai.chat.completions.create({
@@ -70,13 +80,28 @@ Generate 8-12 diverse Q&A pairs in JSON format with this structure:
       });
 
       const content = response.choices[0].message.content;
-      const parsedResponse = JSON.parse(content);
+      
+      // Clean up the response to ensure valid JSON
+      const jsonMatch = content.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) {
+        throw new Error('No valid JSON found in response');
+      }
+
+      const parsedResponse = JSON.parse(jsonMatch[0]);
+      
+      if (!parsedResponse.qa_pairs || !Array.isArray(parsedResponse.qa_pairs)) {
+        throw new Error('Invalid response format');
+      }
       
       return parsedResponse.qa_pairs.map(qa => ({
-        ...qa,
+        question: qa.question || '',
+        answer: qa.answer || '',
+        category: qa.category || 'general',
+        keywords: Array.isArray(qa.keywords) ? qa.keywords : [],
+        confidence: typeof qa.confidence === 'number' ? qa.confidence : 0.8,
         sourcePages: pages.map(p => p.url),
         generatedAt: new Date().toISOString()
-      }));
+      })).filter(qa => qa.question && qa.answer);
 
     } catch (error) {
       console.error('Error generating Q&A:', error.message);
@@ -102,10 +127,21 @@ Generate 8-12 diverse Q&A pairs in JSON format with this structure:
 
   async generateEmbeddings(text) {
     try {
+      if (!text || text.trim().length === 0) {
+        throw new Error('Empty text provided for embedding');
+      }
+
+      // Clean and limit text
+      const cleanText = text.replace(/\s+/g, ' ').trim().substring(0, 8000);
+
       const response = await openai.embeddings.create({
         model: this.embeddingModel,
-        input: text.substring(0, 8000) // Limit input size
+        input: cleanText
       });
+
+      if (!response.data || !response.data[0] || !response.data[0].embedding) {
+        throw new Error('Invalid embedding response');
+      }
 
       return response.data[0].embedding;
     } catch (error) {
@@ -122,7 +158,9 @@ Generate 8-12 diverse Q&A pairs in JSON format with this structure:
     
     Use the provided context to answer user questions accurately and helpfully. If the context doesn't contain relevant information, politely say you don't have that information and suggest contacting the website directly.
     
-    Keep responses concise but informative. Match the tone and style appropriate for the bot type.`;
+    Keep responses concise but informative. Match the tone and style appropriate for the bot type.
+    
+    Always be helpful, professional, and accurate.`;
 
     try {
       const response = await openai.chat.completions.create({
@@ -150,8 +188,8 @@ Generate 8-12 diverse Q&A pairs in JSON format with this structure:
     }
 
     const combinedContent = pages
-      .slice(0, 5) // Use first 5 pages for summary
-      .map(page => `${page.title}: ${page.textContent.substring(0, 1000)}`)
+      .slice(0, 3) // Use first 3 pages for summary
+      .map(page => `${page.title}: ${page.textContent.substring(0, 800)}`)
       .join('\n\n');
 
     const prompt = `Analyze the following website content and provide a comprehensive summary including:
@@ -159,7 +197,6 @@ Generate 8-12 diverse Q&A pairs in JSON format with this structure:
     2. Main services or products offered
     3. Key features and benefits
     4. Target audience
-    5. Contact information if available
 
     Website Content:
     ${combinedContent}
@@ -170,7 +207,7 @@ Generate 8-12 diverse Q&A pairs in JSON format with this structure:
       const response = await openai.chat.completions.create({
         model: this.model,
         messages: [{ role: 'user', content: prompt }],
-        max_tokens: 800,
+        max_tokens: 600,
         temperature: 0.5
       });
 

@@ -1,4 +1,3 @@
-import puppeteer from 'puppeteer';
 import * as cheerio from 'cheerio';
 import { URL } from 'url';
 
@@ -13,10 +12,11 @@ class WebScrapingService {
     const {
       maxPages = this.maxPagesPerSite,
       includeSubdomains = false,
-      excludePatterns = ['/admin', '/login', '/api', '.pdf', '.jpg', '.png', '.gif']
+      excludePatterns = ['/admin', '/login', '/api', '.pdf', '.jpg', '.png', '.gif', '.css', '.js']
     } = options;
 
-    let browser;
+    console.log(`🚀 Starting website scraping for: ${baseUrl}`);
+
     const scrapedData = {
       baseUrl,
       pages: [],
@@ -28,29 +28,8 @@ class WebScrapingService {
     };
 
     try {
-      // Launch browser
-      browser = await puppeteer.launch({
-        headless: 'new',
-        args: [
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          '--disable-dev-shm-usage',
-          '--disable-accelerated-2d-canvas',
-          '--no-first-run',
-          '--no-zygote',
-          '--disable-gpu'
-        ]
-      });
-
-      const page = await browser.newPage();
-      await page.setUserAgent(this.userAgent);
-      await page.setViewport({ width: 1920, height: 1080 });
-
-      // Set timeout
-      page.setDefaultTimeout(this.timeout);
-
       // Discover all URLs from the website
-      const urlsToScrape = await this.discoverUrls(page, baseUrl, {
+      const urlsToScrape = await this.discoverUrls(baseUrl, {
         maxPages,
         includeSubdomains,
         excludePatterns
@@ -64,8 +43,8 @@ class WebScrapingService {
         console.log(`🔍 Scraping ${i + 1}/${Math.min(urlsToScrape.length, maxPages)}: ${url}`);
 
         try {
-          const pageData = await this.scrapePage(page, url);
-          if (pageData) {
+          const pageData = await this.scrapePage(url);
+          if (pageData && pageData.textContent.length > 100) {
             scrapedData.pages.push(pageData);
           }
         } catch (error) {
@@ -84,21 +63,21 @@ class WebScrapingService {
       scrapedData.metadata.totalPages = scrapedData.pages.length;
       console.log(`✅ Scraping completed: ${scrapedData.pages.length} pages scraped`);
 
+      if (scrapedData.pages.length === 0) {
+        throw new Error('No content could be extracted from the website');
+      }
+
       return scrapedData;
 
     } catch (error) {
       console.error('❌ Scraping failed:', error.message);
       throw new Error(`Website scraping failed: ${error.message}`);
-    } finally {
-      if (browser) {
-        await browser.close();
-      }
     }
   }
 
-  async discoverUrls(page, baseUrl, options) {
+  async discoverUrls(baseUrl, options) {
     const { maxPages, includeSubdomains, excludePatterns } = options;
-    const discoveredUrls = new Set();
+    const discoveredUrls = new Set([baseUrl]);
     const urlsToProcess = [baseUrl];
     const processedUrls = new Set();
 
@@ -111,12 +90,30 @@ class WebScrapingService {
       processedUrls.add(currentUrl);
 
       try {
-        await page.goto(currentUrl, { waitUntil: 'networkidle0', timeout: this.timeout });
+        const response = await fetch(currentUrl, {
+          headers: {
+            'User-Agent': this.userAgent
+          },
+          timeout: this.timeout
+        });
+
+        if (!response.ok) continue;
+
+        const html = await response.text();
+        const $ = cheerio.load(html);
         
         // Extract all links from the page
-        const links = await page.evaluate(() => {
-          const anchors = Array.from(document.querySelectorAll('a[href]'));
-          return anchors.map(anchor => anchor.href).filter(href => href);
+        const links = [];
+        $('a[href]').each((i, el) => {
+          const href = $(el).attr('href');
+          if (href) {
+            try {
+              const absoluteUrl = new URL(href, currentUrl).toString();
+              links.push(absoluteUrl);
+            } catch {
+              // Skip invalid URLs
+            }
+          }
         });
 
         for (const link of links) {
@@ -131,8 +128,8 @@ class WebScrapingService {
             // Check exclude patterns
             if (excludePatterns.some(pattern => link.includes(pattern))) continue;
 
-            // Normalize URL (remove fragments and query params for discovery)
-            const normalizedUrl = `${linkUrl.protocol}//${linkUrl.hostname}${linkUrl.pathname}`;
+            // Normalize URL (remove fragments)
+            const normalizedUrl = `${linkUrl.protocol}//${linkUrl.hostname}${linkUrl.pathname}${linkUrl.search}`;
             
             if (!discoveredUrls.has(normalizedUrl) && !processedUrls.has(normalizedUrl)) {
               discoveredUrls.add(normalizedUrl);
@@ -146,8 +143,6 @@ class WebScrapingService {
           }
         }
 
-        discoveredUrls.add(currentUrl);
-
       } catch (error) {
         console.error(`Error discovering URLs from ${currentUrl}:`, error.message);
         continue;
@@ -157,58 +152,103 @@ class WebScrapingService {
     return Array.from(discoveredUrls);
   }
 
-  async scrapePage(page, url) {
+  async scrapePage(url) {
     try {
-      await page.goto(url, { waitUntil: 'networkidle0', timeout: this.timeout });
-
-      // Wait for dynamic content to load
-      await page.waitForTimeout(2000);
-
-      // Get page content
-      const content = await page.evaluate(() => {
-        // Remove script and style elements
-        const scripts = document.querySelectorAll('script, style, noscript');
-        scripts.forEach(el => el.remove());
-
-        // Extract structured data
-        const title = document.title || '';
-        const description = document.querySelector('meta[name="description"]')?.content || '';
-        const keywords = document.querySelector('meta[name="keywords"]')?.content || '';
-        
-        // Extract main content
-        const mainContent = document.querySelector('main') || document.body;
-        const textContent = mainContent?.innerText || '';
-        
-        // Extract headings for structure
-        const headings = Array.from(document.querySelectorAll('h1, h2, h3, h4, h5, h6'))
-          .map(h => ({
-            level: parseInt(h.tagName.charAt(1)),
-            text: h.innerText.trim()
-          }))
-          .filter(h => h.text.length > 0);
-
-        // Extract navigation links
-        const navLinks = Array.from(document.querySelectorAll('nav a, .nav a, .navigation a'))
-          .map(a => ({
-            text: a.innerText.trim(),
-            href: a.href
-          }))
-          .filter(link => link.text.length > 0);
-
-        return {
-          title,
-          description,
-          keywords,
-          textContent: textContent.replace(/\s+/g, ' ').trim(),
-          headings,
-          navLinks,
-          wordCount: textContent.split(/\s+/).length
-        };
+      const response = await fetch(url, {
+        headers: {
+          'User-Agent': this.userAgent,
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.5',
+          'Accept-Encoding': 'gzip, deflate',
+          'Connection': 'keep-alive'
+        },
+        timeout: this.timeout
       });
+      
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+
+      const html = await response.text();
+      const $ = cheerio.load(html);
+
+      // Remove unwanted elements
+      $('script, style, noscript, nav, header, footer, .nav, .navigation, .menu').remove();
+
+      // Extract structured data
+      const title = $('title').text().trim() || $('h1').first().text().trim() || '';
+      const description = $('meta[name="description"]').attr('content') || 
+                         $('meta[property="og:description"]').attr('content') || '';
+      const keywords = $('meta[name="keywords"]').attr('content') || '';
+      
+      // Extract main content - prioritize main content areas
+      let textContent = '';
+      const contentSelectors = ['main', 'article', '.content', '.main-content', '#content', 'body'];
+      
+      for (const selector of contentSelectors) {
+        const element = $(selector);
+        if (element.length > 0) {
+          textContent = element.text();
+          break;
+        }
+      }
+      
+      if (!textContent) {
+        textContent = $('body').text();
+      }
+      
+      // Clean up text content
+      textContent = textContent
+        .replace(/\s+/g, ' ')
+        .replace(/\n\s*\n/g, '\n')
+        .trim();
+      
+      // Extract headings for structure
+      const headings = [];
+      $('h1, h2, h3, h4, h5, h6').each((i, el) => {
+        const text = $(el).text().trim();
+        if (text.length > 0 && text.length < 200) {
+          headings.push({
+            level: parseInt(el.tagName.charAt(1)),
+            text: text
+          });
+        }
+      });
+
+      // Extract navigation links
+      const navLinks = [];
+      $('nav a, .nav a, .navigation a, .menu a').each((i, el) => {
+        const text = $(el).text().trim();
+        const href = $(el).attr('href');
+        if (text.length > 0 && href) {
+          try {
+            const absoluteUrl = new URL(href, url).toString();
+            navLinks.push({
+              text: text,
+              href: absoluteUrl
+            });
+          } catch {
+            // Skip invalid URLs
+          }
+        }
+      });
+
+      const wordCount = textContent.split(/\s+/).filter(word => word.length > 0).length;
+
+      // Validate content quality
+      if (wordCount < 50) {
+        throw new Error('Page content too short or empty');
+      }
 
       return {
         url,
-        ...content,
+        title,
+        description,
+        keywords,
+        textContent,
+        headings,
+        navLinks,
+        wordCount,
         scrapedAt: new Date().toISOString()
       };
 
@@ -217,63 +257,33 @@ class WebScrapingService {
     }
   }
 
-  async scrapeWithFallback(url) {
+  validateUrl(url) {
     try {
-      // Try with Puppeteer first (for dynamic content)
-      return await this.scrapeWebsite(url);
-    } catch (puppeteerError) {
-      console.log('Puppeteer failed, trying with Cheerio...');
+      const parsedUrl = new URL(url);
       
-      try {
-        // Fallback to Cheerio for static content
-        const response = await fetch(url, {
-          headers: {
-            'User-Agent': this.userAgent
-          }
-        });
-        
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-        }
-
-        const html = await response.text();
-        const $ = cheerio.load(html);
-
-        // Remove unwanted elements
-        $('script, style, noscript').remove();
-
-        const pageData = {
-          url,
-          title: $('title').text() || '',
-          description: $('meta[name="description"]').attr('content') || '',
-          keywords: $('meta[name="keywords"]').attr('content') || '',
-          textContent: $('body').text().replace(/\s+/g, ' ').trim(),
-          headings: $('h1, h2, h3, h4, h5, h6').map((i, el) => ({
-            level: parseInt(el.tagName.charAt(1)),
-            text: $(el).text().trim()
-          })).get().filter(h => h.text.length > 0),
-          navLinks: $('nav a, .nav a, .navigation a').map((i, el) => ({
-            text: $(el).text().trim(),
-            href: $(el).attr('href')
-          })).get().filter(link => link.text.length > 0),
-          scrapedAt: new Date().toISOString()
-        };
-
-        pageData.wordCount = pageData.textContent.split(/\s+/).length;
-
-        return {
-          baseUrl: url,
-          pages: [pageData],
-          metadata: {
-            totalPages: 1,
-            scrapedAt: new Date().toISOString(),
-            errors: []
-          }
-        };
-
-      } catch (cheerioError) {
-        throw new Error(`Both scraping methods failed. Puppeteer: ${puppeteerError.message}, Cheerio: ${cheerioError.message}`);
+      // Check if it's HTTP or HTTPS
+      if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
+        return { valid: false, error: 'URL must use HTTP or HTTPS protocol' };
       }
+
+      // Check if hostname exists
+      if (!parsedUrl.hostname) {
+        return { valid: false, error: 'Invalid hostname' };
+      }
+
+      // Block localhost and private IPs for security
+      const hostname = parsedUrl.hostname.toLowerCase();
+      if (hostname === 'localhost' || 
+          hostname.startsWith('127.') || 
+          hostname.startsWith('192.168.') ||
+          hostname.startsWith('10.') ||
+          hostname.includes('0.0.0.0')) {
+        return { valid: false, error: 'Private and local URLs are not allowed' };
+      }
+
+      return { valid: true, url: parsedUrl.toString() };
+    } catch (error) {
+      return { valid: false, error: 'Invalid URL format' };
     }
   }
 }
